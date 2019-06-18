@@ -153,6 +153,141 @@ class Optimizer(object):
     def from_config(cls, config):
         return cls(**config)
 
+class CStep(Optimizer):
+    """Convex Step optimizer.
+
+    # Arguments
+        lr: float >= 0.
+        alpha: float >= 0. Initialzation of Jacobian
+
+
+    User Assumptions:
+        Each Layer creates new Instance?
+            Will need to create a weight tensor of proper size for inverse approximation?
+    """
+
+    def __init__(self, alpha=0.001, lr=0.01, epsilon = None, **kwargs):
+
+        super(CStep, self).__init__(**kwargs)
+        with K.name_scope(self.__class__.__name__):
+            self.iterations = K.variable(0, dtype='int64', name='iterations')
+            self.alpha = K.variable(alpha, name = 'alpha')
+            self.lr = K.variable(lr, name = 'lr')
+        if epsilon is None:
+            epsilon = K.epsilon()
+        self.epsilon = epsilon
+
+    @interfaces.legacy_get_updates_support
+    def get_updates(self, loss, params):
+        grads = self.get_gradients(loss, params)
+
+        lr = self.lr
+        self.updates = [K.update_add(self.iterations, 1)]
+        shapes = [K.int_shape(p) for p in params]
+        old_hessians = [K.zeros(shape) for shape in shapes]
+        old_grads = [K.zeros(shape) for shape in shapes]
+        old_params = [K.zeros(shape) for shape in shapes]
+        h_step = [K.zeros(shape) for shape in shapes]
+
+        #Run CStep!
+        for p, g, old_p, old_g, old_h, s in zip(params, grads, old_params, old_grads, old_hessians, h_step):
+            del_p = p - old_p
+
+            #step = (2 * del_p)/(g*(del_p/s + 2) - 3*old_g - s*old_h + self.epsilon)
+            step = (g - old_g)/(del_p)
+
+            step = K.clip(step, -lr, lr)
+
+            new_p = p - step * g
+
+            # Apply constraints.
+            if getattr(p, 'constraint', None) is not None:
+                new_p = p.constraint(new_p)
+
+            self.updates.append(K.update(old_p, p))
+            self.updates.append(K.update(old_g, g))
+            #self.updates.append(K.update(old_h, step))
+            #self.updates.append(K.moving_average_update(s, del_p, .99))
+            self.updates.append(K.update(p, new_p))
+            
+        return self.updates
+
+    def get_config(self):
+        config = {'lr': float(K.get_value(self.lr)),
+                  'alpha': float(K.get_value(self.alpha))}
+        base_config = super(CStep, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+class MStep(Optimizer):
+    """Mass Convex Step optimizer.
+
+    # Arguments
+        lr: float > 0
+        alpha float > 0
+        beta: float > 0
+        c: float > 0
+        delta: float > 0
+
+
+    """
+
+    def __init__(self, lr=0.01, alpha=0.002, beta=0.2, chi=0.01, delta=0.001, e = 0.1, epsilon = None, **kwargs):
+        super(MStep, self).__init__(**kwargs)
+        with K.name_scope(self.__class__.__name__):
+            self.iterations = K.variable(0, dtype='int64', name='iterations')
+            self.lr = K.variable(lr, name = 'lr')
+            self.alpha = K.variable(alpha, name = 'alpha')
+            self.beta = K.variable(beta, name = 'beta')
+            self.chi = K.variable(chi, name = 'chi')
+            self.delta = K.variable(delta, name = 'delta')
+            self.e = K.variable(e, name = 'e')
+            self.inf = K.variable(1000000000000, name = 'inf')
+
+        if epsilon is None:
+            epsilon = K.epsilon()
+        self.epsilon = epsilon
+
+    @interfaces.legacy_get_updates_support
+    def get_updates(self, loss, params):
+        grads = self.get_gradients(loss, params)
+
+        self.updates = [K.update_add(self.iterations, 1)]
+        shapes = [K.int_shape(p) for p in params]
+
+
+        M = [K.ones(shape) for shape in shapes]
+        U_p = [K.zeros(shape) for shape in shapes]
+        U_g = [K.zeros(shape) for shape in shapes]
+        L_o = self.inf
+        e_scaler = 
+
+
+        #Run CStep!
+        for p, g, old_p, old_g, m in zip(params, grads, U_p, U_g, M):
+
+            new_m = m*(1 - self.delta + self.alpha*K.sign(loss - L_o)*K.exp(-K.square(g - old_g)*/(K.square(p - old_p) + self.epsilon)/self.chi))
+            K.print(new_m)
+            # Apply constraints.
+            if getattr(p, 'constraint', None) is not None:
+                new_p = p.constraint(new_p)
+
+            new_p = p - self.lr*(1/new_m)*g
+
+
+            self.updates.append(K.update(m, new_m))
+            self.updates.append(K.moving_average_update(old_g, g, self.beta))
+            self.updates.append(K.moving_average_update(old_p, p, self.beta))
+            self.updates.append(K.update(p, new_p))
+
+        self.updates.append(K.update(L_o, loss))   
+
+        return self.updates
+
+    def get_config(self):
+        config = {'lr': float(K.get_value(self.lr)),
+                  'alpha': float(K.get_value(self.alpha))}
+        base_config = super(CStep, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
 
 class SGD(Optimizer):
     """Stochastic gradient descent optimizer.
@@ -788,6 +923,9 @@ def get(identifier):
     # Raises
         ValueError: If `identifier` cannot be interpreted.
     """
+    print(identifier)
+    print(six.string_types)
+    print(Optimizer)
     if K.backend() == 'tensorflow':
         # Wrap TF optimizer instances
         if isinstance(identifier, tf.train.Optimizer):
